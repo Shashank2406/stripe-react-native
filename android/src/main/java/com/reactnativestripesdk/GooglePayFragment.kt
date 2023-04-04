@@ -1,34 +1,44 @@
 package com.reactnativestripesdk
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.fragment.app.Fragment
-import com.facebook.react.bridge.Promise
-import com.facebook.react.bridge.WritableNativeMap
-import com.reactnativestripesdk.utils.GooglePayErrorType
-import com.reactnativestripesdk.utils.createError
-import com.reactnativestripesdk.utils.createResult
-import com.reactnativestripesdk.utils.mapFromPaymentMethod
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.stripe.android.googlepaylauncher.GooglePayEnvironment
 import com.stripe.android.googlepaylauncher.GooglePayLauncher
 import com.stripe.android.googlepaylauncher.GooglePayPaymentMethodLauncher
 
-class GooglePayFragment(private val initPromise: Promise) : Fragment() {
+class GooglePayFragment : Fragment() {
   private var googlePayLauncher: GooglePayLauncher? = null
   private var googlePayMethodLauncher: GooglePayPaymentMethodLauncher? = null
   private var isGooglePayMethodLauncherReady: Boolean = false
   private var isGooglePayLauncherReady: Boolean = false
-  private var presentPromise: Promise? = null
-  private var createPaymentMethodPromise: Promise? = null
+  private lateinit var localBroadcastManager: LocalBroadcastManager
+
+  private fun onGooglePayMethodLauncherReady(isReady: Boolean) {
+    isGooglePayMethodLauncherReady = true
+    if (isGooglePayLauncherReady) {
+      onGooglePayReady(isReady)
+    }
+  }
+
+  private fun onGooglePayLauncherReady(isReady: Boolean) {
+    isGooglePayLauncherReady = true
+    if (isGooglePayMethodLauncherReady) {
+      onGooglePayReady(isReady)
+    }
+  }
 
   override fun onCreateView(
     inflater: LayoutInflater,
     container: ViewGroup?,
     savedInstanceState: Bundle?
   ): View {
+    localBroadcastManager = LocalBroadcastManager.getInstance(requireContext())
     return FrameLayout(requireActivity()).also {
       it.visibility = View.GONE
     }
@@ -79,104 +89,74 @@ class GooglePayFragment(private val initPromise: Promise) : Fragment() {
     )
   }
 
-  private fun onGooglePayMethodLauncherReady(isReady: Boolean) {
-    isGooglePayMethodLauncherReady = true
-    if (isGooglePayLauncherReady) {
-      onGooglePayReady(isReady)
-    }
-  }
-
-  private fun onGooglePayLauncherReady(isReady: Boolean) {
-    isGooglePayLauncherReady = true
-    if (isGooglePayMethodLauncherReady) {
-      onGooglePayReady(isReady)
-    }
-  }
-
-  private fun onGooglePayReady(isReady: Boolean) {
-    if (isReady) {
-      initPromise.resolve(WritableNativeMap())
-    } else {
-      initPromise.resolve(
-        createError(
-          GooglePayErrorType.Failed.toString(),
-          "Google Pay is not available on this device. You can use isGooglePaySupported to preemptively check for Google Pay support."
-        )
-      )
-    }
-  }
-
-  fun presentForPaymentIntent(clientSecret: String, promise: Promise) {
+  fun presentForPaymentIntent(clientSecret: String) {
     val launcher = googlePayLauncher ?: run {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), "GooglePay is not initialized."))
+      val intent = Intent(ON_GOOGLE_PAY_RESULT)
+      intent.putExtra("error", "GooglePayLauncher is not initialized.")
+      localBroadcastManager.sendBroadcast(intent)
       return
     }
     runCatching {
-      presentPromise = promise
       launcher.presentForPaymentIntent(clientSecret)
     }.onFailure {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), it))
+      val intent = Intent(ON_GOOGLE_PAY_RESULT)
+      intent.putExtra("error", it.localizedMessage)
+      localBroadcastManager.sendBroadcast(intent)
     }
   }
 
-  fun presentForSetupIntent(clientSecret: String, currencyCode: String, promise: Promise) {
+  fun presentForSetupIntent(clientSecret: String, currencyCode: String) {
     val launcher = googlePayLauncher ?: run {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), "GooglePay is not initialized."))
+      val intent = Intent(ON_GOOGLE_PAY_RESULT)
+      intent.putExtra("error", "GooglePayLauncher is not initialized.")
+      localBroadcastManager.sendBroadcast(intent)
       return
     }
     runCatching {
-      presentPromise = promise
       launcher.presentForSetupIntent(clientSecret, currencyCode)
     }.onFailure {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), it))
+      val intent = Intent(ON_GOOGLE_PAY_RESULT)
+      intent.putExtra("error", it.localizedMessage)
+      localBroadcastManager.sendBroadcast(intent)
     }
   }
 
-  fun createPaymentMethod(currencyCode: String, amount: Int, promise: Promise) {
+  fun createPaymentMethod(currencyCode: String, amount: Int) {
     val launcher = googlePayMethodLauncher ?: run {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), "GooglePayPaymentMethodLauncher is not initialized."))
+      val intent = Intent(ON_GOOGLE_PAYMENT_METHOD_RESULT)
+      intent.putExtra("error", "GooglePayPaymentMethodLauncher is not initialized.")
+      localBroadcastManager.sendBroadcast(intent)
       return
     }
 
     runCatching {
-      createPaymentMethodPromise = promise
       launcher.present(
         currencyCode = currencyCode,
         amount = amount
       )
     }.onFailure {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), it))
+      val intent = Intent(ON_GOOGLE_PAYMENT_METHOD_RESULT)
+      intent.putExtra("error", it.localizedMessage)
+      localBroadcastManager.sendBroadcast(intent)
     }
+  }
+
+  private fun onGooglePayReady(isReady: Boolean) {
+    val intent = Intent(ON_INIT_GOOGLE_PAY)
+    intent.putExtra("isReady", isReady)
+    localBroadcastManager.sendBroadcast(intent)
   }
 
   private fun onGooglePayResult(result: GooglePayLauncher.Result) {
-    when (result) {
-      GooglePayLauncher.Result.Completed -> {
-        presentPromise?.resolve(WritableNativeMap())
-      }
-      GooglePayLauncher.Result.Canceled -> {
-        presentPromise?.resolve(createError(GooglePayErrorType.Canceled.toString(), "Google Pay has been canceled"))
-      }
-      is GooglePayLauncher.Result.Failed -> {
-        presentPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), result.error))
-      }
-    }
-    presentPromise = null
+    val intent = Intent(ON_GOOGLE_PAY_RESULT)
+    intent.putExtra("paymentResult", result)
+    localBroadcastManager.sendBroadcast(intent)
   }
 
   private fun onGooglePayResult(result: GooglePayPaymentMethodLauncher.Result) {
-    when (result) {
-      is GooglePayPaymentMethodLauncher.Result.Completed -> {
-        createPaymentMethodPromise?.resolve(createResult("paymentMethod", mapFromPaymentMethod(result.paymentMethod)))
-      }
-      GooglePayPaymentMethodLauncher.Result.Canceled -> {
-        createPaymentMethodPromise?.resolve(createError(GooglePayErrorType.Canceled.toString(), "Google Pay has been canceled"))
-      }
-      is GooglePayPaymentMethodLauncher.Result.Failed -> {
-        createPaymentMethodPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), result.error))
-      }
-    }
-    createPaymentMethodPromise = null
+    val intent = Intent(ON_GOOGLE_PAYMENT_METHOD_RESULT)
+    intent.putExtra("paymentResult", result)
+    localBroadcastManager.sendBroadcast(intent)
   }
 
   private fun mapToGooglePayLauncherBillingAddressConfig(formatString: String, isRequired: Boolean, isPhoneNumberRequired: Boolean): GooglePayLauncher.BillingAddressConfig {
@@ -203,9 +183,5 @@ class GooglePayFragment(private val initPromise: Promise) : Fragment() {
       format = format,
       isPhoneNumberRequired = isPhoneNumberRequired
     )
-  }
-
-  companion object {
-    internal const val TAG = "google_pay_launch_fragment"
   }
 }

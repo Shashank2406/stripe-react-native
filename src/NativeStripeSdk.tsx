@@ -1,9 +1,7 @@
 import { NativeModules } from 'react-native';
 import type {
   PaymentMethod,
-  PaymentIntent,
   ApplePay,
-  PlatformPay,
   PaymentSheet,
   SetupIntent,
   InitialiseParams,
@@ -26,10 +24,6 @@ import type {
   OpenApplePaySetupResult,
   Token,
   VerifyMicrodepositsParams,
-  IsCardInWalletResult,
-  CanAddCardToWalletParams,
-  CanAddCardToWalletResult,
-  FinancialConnections,
 } from './types';
 
 type NativeStripeSdkType = {
@@ -39,13 +33,12 @@ type NativeStripeSdkType = {
     options: PaymentMethod.CreateOptions
   ): Promise<CreatePaymentMethodResult>;
   handleNextAction(
-    paymentIntentClientSecret: string,
-    returnURL?: string | null
+    paymentIntentClientSecret: string
   ): Promise<HandleNextActionResult>;
   confirmPayment(
     paymentIntentClientSecret: string,
-    params?: PaymentIntent.ConfirmParams,
-    options?: PaymentIntent.ConfirmOptions
+    params: PaymentMethod.ConfirmParams,
+    options: PaymentMethod.ConfirmOptions
   ): Promise<ConfirmPaymentResult>;
   isApplePaySupported(): Promise<boolean>;
   presentApplePay(params: ApplePay.PresentParams): Promise<ApplePayResult>;
@@ -69,13 +62,7 @@ type NativeStripeSdkType = {
   initPaymentSheet(
     params: PaymentSheet.SetupParams
   ): Promise<InitPaymentSheetResult>;
-  initPaymentSheetWithOrderTracking(
-    params: PaymentSheet.SetupParams,
-    callback?: () => void
-  ): Promise<InitPaymentSheetResult>;
-  presentPaymentSheet(
-    options: PaymentSheet.PresentOptions
-  ): Promise<PresentPaymentSheetResult>;
+  presentPaymentSheet(): Promise<PresentPaymentSheetResult>;
   confirmPaymentSheetPayment(): Promise<ConfirmPaymentSheetPaymentResult>;
   createTokenForCVCUpdate(cvc: string): Promise<CreateTokenForCVCUpdateResult>;
   handleURLCallback(url: string): Promise<boolean>;
@@ -99,46 +86,6 @@ type NativeStripeSdkType = {
     clientSecret: string,
     params: PaymentMethod.CollectBankAccountParams
   ): Promise<ConfirmSetupIntentResult | ConfirmPaymentResult>;
-  getConstants(): { API_VERSIONS: { CORE: string; ISSUING: string } };
-  canAddCardToWallet(
-    params: CanAddCardToWalletParams
-  ): Promise<CanAddCardToWalletResult>;
-  isCardInWallet(params: {
-    cardLastFour: string;
-  }): Promise<IsCardInWalletResult>;
-  collectBankAccountToken(
-    clientSecret: string
-  ): Promise<FinancialConnections.TokenResult>;
-  collectFinancialConnectionsAccounts(
-    clientSecret: string
-  ): Promise<FinancialConnections.SessionResult>;
-  resetPaymentSheetCustomer(): Promise<null>;
-  isPlatformPaySupported(params: {
-    googlePay?: GooglePay.IsSupportedParams;
-  }): Promise<boolean>;
-  createPlatformPayPaymentMethod(
-    params: PlatformPay.PaymentMethodParams,
-    usesDeprecatedTokenFlow: boolean
-  ): Promise<PlatformPay.PaymentMethodResult | PlatformPay.TokenResult>;
-  dismissPlatformPay(): Promise<boolean>;
-  updatePlatformPaySheet(
-    summaryItems: Array<ApplePay.CartSummaryItem>,
-    shippingMethods: Array<ApplePay.ShippingMethod>,
-    errors: Array<PlatformPay.ApplePaySheetError>
-  ): Promise<void>;
-  confirmPlatformPay(
-    clientSecret: string,
-    params: PlatformPay.ConfirmParams,
-    isPaymentIntent: boolean
-  ): Promise<
-    PlatformPay.ConfirmPaymentResult | PlatformPay.ConfirmSetupIntentResult
-  >;
-  configureOrderTracking(
-    orderTypeIdentifier: string,
-    orderIdentifier: string,
-    webServiceUrl: string,
-    authenticationToken: string
-  ): Promise<void>;
 };
 
 const { StripeSdk } = NativeModules;

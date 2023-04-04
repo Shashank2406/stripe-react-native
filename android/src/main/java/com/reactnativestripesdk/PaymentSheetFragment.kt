@@ -1,14 +1,12 @@
 package com.reactnativestripesdk
 
-import android.app.Activity
-import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.util.Base64
 import android.view.LayoutInflater
 import android.view.View
@@ -17,35 +15,26 @@ import android.widget.FrameLayout
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.graphics.drawable.DrawableCompat
 import androidx.fragment.app.Fragment
-import com.facebook.react.bridge.Promise
-import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.WritableMap
-import com.facebook.react.bridge.WritableNativeMap
-import com.reactnativestripesdk.addresssheet.AddressSheetView
-import com.reactnativestripesdk.utils.*
-import com.reactnativestripesdk.utils.createError
-import com.reactnativestripesdk.utils.createResult
-import com.stripe.android.paymentsheet.*
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.stripe.android.paymentsheet.PaymentOptionCallback
+import com.stripe.android.paymentsheet.PaymentSheet
+import com.stripe.android.paymentsheet.PaymentSheetResultCallback
 import java.io.ByteArrayOutputStream
 
-class PaymentSheetFragment(
-  private val context: ReactApplicationContext,
-  private val initPromise: Promise
-) : Fragment() {
+class PaymentSheetFragment : Fragment() {
   private var paymentSheet: PaymentSheet? = null
   private var flowController: PaymentSheet.FlowController? = null
   private var paymentIntentClientSecret: String? = null
   private var setupIntentClientSecret: String? = null
   private lateinit var paymentSheetConfiguration: PaymentSheet.Configuration
-  private var confirmPromise: Promise? = null
-  private var presentPromise: Promise? = null
-  private var paymentSheetTimedOut = false
+  private lateinit var localBroadcastManager: LocalBroadcastManager
 
   override fun onCreateView(
     inflater: LayoutInflater,
     container: ViewGroup?,
     savedInstanceState: Bundle?
   ): View {
+    localBroadcastManager = LocalBroadcastManager.getInstance(requireContext())
     return FrameLayout(requireActivity()).also {
       it.visibility = View.GONE
     }
@@ -54,69 +43,41 @@ class PaymentSheetFragment(
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
     super.onViewCreated(view, savedInstanceState)
     val merchantDisplayName = arguments?.getString("merchantDisplayName").orEmpty()
-    if (merchantDisplayName.isEmpty()) {
-      initPromise.resolve(createError(ErrorType.Failed.toString(), "merchantDisplayName cannot be empty or null."))
-      return
-    }
-    val primaryButtonLabel = arguments?.getString("primaryButtonLabel")
     val customerId = arguments?.getString("customerId").orEmpty()
     val customerEphemeralKeySecret = arguments?.getString("customerEphemeralKeySecret").orEmpty()
-    val googlePayConfig = buildGooglePayConfig(arguments?.getBundle("googlePay"))
+    val countryCode = arguments?.getString("merchantCountryCode").orEmpty()
+    val currencyCode = arguments?.getString("currencyCode").orEmpty()
+    val googlePayEnabled = arguments?.getBoolean("googlePay")
+    val testEnv = arguments?.getBoolean("testEnv")
     val allowsDelayedPaymentMethods = arguments?.getBoolean("allowsDelayedPaymentMethods")
+    val primaryButtonColorHexStr = arguments?.getString("primaryButtonColor").orEmpty()
     val billingDetailsBundle = arguments?.getBundle("defaultBillingDetails")
     paymentIntentClientSecret = arguments?.getString("paymentIntentClientSecret").orEmpty()
     setupIntentClientSecret = arguments?.getString("setupIntentClientSecret").orEmpty()
-    val appearance = try {
-      buildPaymentSheetAppearance(arguments?.getBundle("appearance"), context)
-    } catch (error: PaymentSheetAppearanceException) {
-      initPromise.resolve(createError(ErrorType.Failed.toString(), error))
-      return
-    }
-
-    val shippingDetails = arguments?.getBundle("defaultShippingDetails")?.let {
-      AddressSheetView.buildAddressDetails(it)
-    }
 
     val paymentOptionCallback = PaymentOptionCallback { paymentOption ->
-      val result = paymentOption?.let {
-        val bitmap = getBitmapFromVectorDrawable(context, it.drawableResourceId)
+      val intent = Intent(ON_PAYMENT_OPTION_ACTION)
+
+      if (paymentOption != null) {
+        val bitmap = getBitmapFromVectorDrawable(context, paymentOption.drawableResourceId)
         val imageString = getBase64FromBitmap(bitmap)
-        val option: WritableMap = WritableNativeMap()
-        option.putString("label", it.label)
-        option.putString("image", imageString)
-        createResult("paymentOption", option)
-      } ?: run {
-        if (paymentSheetTimedOut) {
-          paymentSheetTimedOut = false
-          createError(PaymentSheetErrorType.Timeout.toString(), "The payment has timed out")
-        } else {
-          createError(PaymentSheetErrorType.Canceled.toString(), "The payment option selection flow has been canceled")
-        }
+
+        intent.putExtra("label", paymentOption.label)
+        intent.putExtra("image", imageString)
       }
-      presentPromise?.resolve(result)
+      localBroadcastManager.sendBroadcast(intent)
     }
 
     val paymentResultCallback = PaymentSheetResultCallback { paymentResult ->
-      if (paymentSheetTimedOut) {
-        paymentSheetTimedOut = false
-        resolvePaymentResult(createError(PaymentSheetErrorType.Timeout.toString(), "The payment has timed out"))
-      } else {
-        when (paymentResult) {
-          is PaymentSheetResult.Canceled -> {
-            resolvePaymentResult(createError(PaymentSheetErrorType.Canceled.toString(), "The payment flow has been canceled"))
-          }
-          is PaymentSheetResult.Failed -> {
-            resolvePaymentResult(createError(PaymentSheetErrorType.Failed.toString(), paymentResult.error))
-          }
-          is PaymentSheetResult.Completed -> {
-            resolvePaymentResult(WritableNativeMap())
-            // Remove the fragment now, we can be sure it won't be needed again if an intent is successful
-            removeFragment(context)
-            paymentSheet = null
-            flowController = null
-          }
-        }
-      }
+      val intent = Intent(ON_PAYMENT_RESULT_ACTION)
+
+      intent.putExtra("paymentResult", paymentResult)
+      localBroadcastManager.sendBroadcast(intent)
+    }
+
+    var primaryButtonColor: ColorStateList? = null
+    if (primaryButtonColorHexStr.isNotEmpty()) {
+      primaryButtonColor = ColorStateList.valueOf(Color.parseColor(primaryButtonColorHexStr))
     }
 
     var defaultBillingDetails: PaymentSheet.BillingDetails? = null
@@ -139,15 +100,17 @@ class PaymentSheetFragment(
     paymentSheetConfiguration = PaymentSheet.Configuration(
       merchantDisplayName = merchantDisplayName,
       allowsDelayedPaymentMethods = allowsDelayedPaymentMethods ?: false,
+      primaryButtonColor = primaryButtonColor,
       defaultBillingDetails=defaultBillingDetails,
       customer = if (customerId.isNotEmpty() && customerEphemeralKeySecret.isNotEmpty()) PaymentSheet.CustomerConfiguration(
         id = customerId,
         ephemeralKeySecret = customerEphemeralKeySecret
       ) else null,
-      googlePay = googlePayConfig,
-      appearance = appearance,
-      shippingDetails = shippingDetails,
-      primaryButtonLabel = primaryButtonLabel
+      googlePay = if (googlePayEnabled == true) PaymentSheet.GooglePayConfiguration(
+        environment = if (testEnv == true) PaymentSheet.GooglePayConfiguration.Environment.Test else PaymentSheet.GooglePayConfiguration.Environment.Production,
+        countryCode = countryCode,
+        currencyCode = currencyCode
+      ) else null
     )
 
     if (arguments?.getBoolean("customFlow") == true) {
@@ -155,12 +118,12 @@ class PaymentSheetFragment(
       configureFlowController()
     } else {
       paymentSheet = PaymentSheet(this, paymentResultCallback)
-      initPromise.resolve(WritableNativeMap())
+      val intent = Intent(ON_INIT_PAYMENT_SHEET)
+      localBroadcastManager.sendBroadcast(intent)
     }
   }
 
-  fun present(promise: Promise) {
-    this.presentPromise = promise
+  fun present() {
     if(paymentSheet != null) {
       if (!paymentIntentClientSecret.isNullOrEmpty()) {
         paymentSheet?.presentWithPaymentIntent(paymentIntentClientSecret!!, paymentSheetConfiguration)
@@ -169,65 +132,26 @@ class PaymentSheetFragment(
       }
     } else if(flowController != null) {
       flowController?.presentPaymentOptions()
-    } else {
-      promise.resolve(createMissingInitError())
     }
   }
 
-  fun presentWithTimeout(timeout: Long, promise: Promise) {
-    var paymentSheetActivity: Activity? = null
-
-    val activityLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
-      override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-        paymentSheetActivity = activity
-      }
-
-      override fun onActivityStarted(activity: Activity) {}
-
-      override fun onActivityResumed(activity: Activity) {}
-
-      override fun onActivityPaused(activity: Activity) {}
-
-      override fun onActivityStopped(activity: Activity) {}
-
-      override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-
-      override fun onActivityDestroyed(activity: Activity) {
-        paymentSheetActivity = null
-        context.currentActivity?.application?.unregisterActivityLifecycleCallbacks(this)
-      }
-    }
-
-    Handler(Looper.getMainLooper()).postDelayed({
-      paymentSheetActivity?.let {
-        it.finish()
-        paymentSheetTimedOut = true
-      }
-    }, timeout)
-
-    context.currentActivity?.application?.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
-
-    this.present(promise)
-  }
-
-  fun confirmPayment(promise: Promise) {
-    this.confirmPromise = promise
+  fun confirmPayment() {
     flowController?.confirm()
   }
 
   private fun configureFlowController() {
     val onFlowControllerConfigure = PaymentSheet.FlowController.ConfigCallback { _, _ ->
-      val result = flowController?.getPaymentOption()?.let {
+      val paymentOption = flowController?.getPaymentOption()
+      val intent = Intent(ON_CONFIGURE_FLOW_CONTROLLER)
+
+      paymentOption?.let {
         val bitmap = getBitmapFromVectorDrawable(context, it.drawableResourceId)
         val imageString = getBase64FromBitmap(bitmap)
-        val option: WritableMap = WritableNativeMap()
-        option.putString("label", it.label)
-        option.putString("image", imageString)
-        createResult("paymentOption", option)
-      } ?: run {
-        WritableNativeMap()
+
+        intent.putExtra("label", it.label)
+        intent.putExtra("image", imageString)
       }
-      initPromise.resolve(result)
+      localBroadcastManager.sendBroadcast(intent)
     }
 
     if (!paymentIntentClientSecret.isNullOrEmpty()) {
@@ -241,39 +165,6 @@ class PaymentSheetFragment(
         setupIntentClientSecret = setupIntentClientSecret!!,
         configuration = paymentSheetConfiguration,
         callback = onFlowControllerConfigure
-      )
-    }
-  }
-
-  private fun resolvePaymentResult(map: WritableMap) {
-    confirmPromise?.let {
-      it.resolve(map)
-      confirmPromise = null
-    } ?: run {
-      presentPromise?.resolve(map)
-    }
-  }
-
-  companion object {
-    internal const val TAG = "payment_sheet_launch_fragment"
-
-    internal fun createMissingInitError(): WritableMap {
-      return createError(PaymentSheetErrorType.Failed.toString(), "No payment sheet has been initialized yet. You must call `initPaymentSheet` before `presentPaymentSheet`.")
-    }
-
-    internal fun buildGooglePayConfig(params: Bundle?): PaymentSheet.GooglePayConfiguration? {
-      if (params == null) {
-        return null
-      }
-
-      val countryCode = params.getString("merchantCountryCode").orEmpty()
-      val currencyCode = params.getString("currencyCode").orEmpty()
-      val testEnv = params.getBoolean("testEnv")
-
-      return PaymentSheet.GooglePayConfiguration(
-        environment = if (testEnv) PaymentSheet.GooglePayConfiguration.Environment.Test else PaymentSheet.GooglePayConfiguration.Environment.Production,
-        countryCode = countryCode,
-        currencyCode = currencyCode
       )
     }
   }

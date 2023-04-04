@@ -28,7 +28,6 @@ export interface Details {
    * See the docs for details: https://stripe.com/docs/security/guide#validating-pci-compliance
    */
   number?: string;
-  cvc?: string;
 }
 
 export interface Styles {
@@ -59,13 +58,12 @@ export interface NativeProps {
   value?: Partial<Details>;
   postalCodeEnabled?: boolean;
   autofocus?: boolean;
-  countryCode: string | null;
   onCardChange(event: NativeSyntheticEvent<Details>): void;
   onFocusChange(
     event: NativeSyntheticEvent<{ focusedField: FieldName | null }>
   ): void;
   cardStyle?: Styles;
-  placeholders?: Placeholders;
+  placeholder?: Placeholders;
 }
 
 export interface Methods {

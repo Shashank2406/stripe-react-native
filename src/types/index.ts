@@ -21,13 +21,10 @@ import * as SetupIntent from './SetupIntent';
 import * as ThreeDSecure from './ThreeDSecure';
 import * as GooglePay from './GooglePay';
 import * as ApplePayButtonComponent from './components/ApplePayButtonComponent';
-import * as GooglePayButtonComponent from './components/GooglePayButtonComponent';
 import * as AuBECSDebitFormComponent from './components/AuBECSDebitFormComponent';
 import * as CardFieldInput from './components/CardFieldInput';
 import * as CardFormView from './components/CardFormView';
 import * as Token from './Token';
-import * as FinancialConnections from './FinancialConnections';
-import * as PlatformPay from './PlatformPay';
 
 export {
   ApplePay,
@@ -38,18 +35,14 @@ export {
   ThreeDSecure,
   GooglePay,
   ApplePayButtonComponent,
-  GooglePayButtonComponent,
   AuBECSDebitFormComponent,
   CardFieldInput,
   CardFormView,
   Token,
-  FinancialConnections,
-  PlatformPay,
 };
 
-export * from './PushProvisioning';
 export * from './Errors';
-export type { Address, BillingDetails, AddressDetails } from './Common';
+export { Address, BillingDetails } from './Common';
 
 /**
  * @ignore
@@ -145,10 +138,19 @@ export type InitPaymentSheetResult =
       error: StripeError<PaymentSheetError>;
     };
 
-export type PresentPaymentSheetResult = {
-  paymentOption?: PaymentSheet.PaymentOption | undefined;
-  error?: StripeError<PaymentSheetError> | undefined;
-};
+export type PresentPaymentSheetResult =
+  | {
+      paymentOption?: undefined;
+      error?: undefined;
+    }
+  | {
+      paymentOption?: PaymentSheet.PaymentOption;
+      error?: undefined;
+    }
+  | {
+      paymentOption?: undefined;
+      error: StripeError<PaymentSheetError>;
+    };
 
 export type CreateTokenResult =
   | {

@@ -10,18 +10,24 @@ import Stripe
 
 internal class PushProvisioningUtils {
     class func canAddCardToWallet(
+        last4: String,
         primaryAccountIdentifier: String,
         testEnv: Bool,
         hasPairedAppleWatch: Bool,
         completion: @escaping (_ canAddCard: Bool, _ status: AddCardToWalletStatus?) -> Void
     ) {
-        if (!canAddPaymentPass(isTestMode: testEnv)) {
+        if (!PKAddPassesViewController.canAddPasses()) {
             completion(false, AddCardToWalletStatus.UNSUPPORTED_DEVICE)
+        }
+        
+        let canAddCard = canAddPaymentPass(
+            primaryAccountIdentifier: primaryAccountIdentifier,
+            isTestMode: testEnv)
+        
+        if (!canAddCard) {
+            completion(canAddCard, AddCardToWalletStatus.MISSING_CONFIGURATION)
         } else {
-            PaymentPassFinder.findPassWith(
-                primaryAccountIdentifier: primaryAccountIdentifier,
-                hasPairedAppleWatch: hasPairedAppleWatch)
-            { canAddCardToADevice, passLocations in
+            PaymentPassFinder.findPassWithLast4(last4: last4, hasPairedAppleWatch: hasPairedAppleWatch) { canAddCardToADevice, passLocations in
                 var status: AddCardToWalletStatus? = nil
                 if (!canAddCardToADevice) {
                     status = AddCardToWalletStatus.CARD_ALREADY_EXISTS
@@ -35,12 +41,16 @@ internal class PushProvisioningUtils {
         }
     }
     
-    class func canAddPaymentPass(isTestMode: Bool) -> Bool {
+    class func canAddPaymentPass(primaryAccountIdentifier: String, isTestMode: Bool) -> Bool {
         if (isTestMode) {
             return STPFakeAddPaymentPassViewController.canAddPaymentPass()
         }
-
-        return PKAddPaymentPassViewController.canAddPaymentPass()
+        
+        if #available(iOS 13.4, *) {
+            return PKPassLibrary().canAddSecureElementPass(primaryAccountIdentifier: primaryAccountIdentifier)
+        } else {
+            return PKAddPaymentPassViewController.canAddPaymentPass()
+        }
     }
     
     class func getPassLocation(last4: String) -> PaymentPassFinder.PassLocation? {
@@ -69,6 +79,7 @@ internal class PushProvisioningUtils {
     
     enum AddCardToWalletStatus: String {
         case UNSUPPORTED_DEVICE
+        case MISSING_CONFIGURATION
         case CARD_ALREADY_EXISTS
         case CARD_EXISTS_ON_CURRENT_DEVICE
         case CARD_EXISTS_ON_PAIRED_DEVICE

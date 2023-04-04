@@ -30,12 +30,9 @@ const CardFieldNative =
  */
 export interface Props extends AccessibilityProps {
   style?: StyleProp<ViewStyle>;
-  /** Controls if a postal code entry field can be displayed to the user. If true, the type of code entry shown is controlled by the set countryCode prop. Some country codes may result in no postal code entry being shown if those countries do not commonly use postal codes. If false, no postal code entry will ever be displayed. Defaults to true.*/
   postalCodeEnabled?: boolean;
-  /** Controls the postal code entry shown (if the postalCodeEnabled prop is set to true). Defaults to the device's default locale. */
-  countryCode?: string;
   cardStyle?: CardFieldInput.Styles;
-  placeholders?: CardFieldInput.Placeholders;
+  placeholder?: CardFieldInput.Placeholders;
   autofocus?: boolean;
   onCardChange?(card: CardFieldInput.Details): void;
   onBlur?(): void;
@@ -75,9 +72,8 @@ export const CardField = forwardRef<CardFieldInput.Methods, Props>(
       onFocus,
       onBlur,
       cardStyle,
-      placeholders,
+      placeholder,
       postalCodeEnabled,
-      countryCode,
       ...props
     },
     ref
@@ -102,9 +98,8 @@ export const CardField = forwardRef<CardFieldInput.Methods, Props>(
         if (card.hasOwnProperty('postalCode')) {
           data.postalCode = card.postalCode || '';
         }
-        if (card.hasOwnProperty('number') || card.hasOwnProperty('cvc')) {
+        if (card.hasOwnProperty('number')) {
           data.number = card.number || '';
-          data.cvc = card.cvc || '';
           if (__DEV__ && onCardChange && card.complete) {
             console.warn(
               `[stripe-react-native] ⚠️ WARNING: You've enabled \`dangerouslyGetFullCardDetails\`, meaning full card details are being returned. Only do this if you're certain that you fulfill the necessary PCI compliance requirements. Make sure that you're not mistakenly logging or storing full card details! See the docs for details: https://stripe.com/docs/security/guide#validating-pci-compliance`
@@ -179,7 +174,6 @@ export const CardField = forwardRef<CardFieldInput.Methods, Props>(
         onCardChange={onCardChangeHandler}
         onFocusChange={onFocusHandler}
         postalCodeEnabled={postalCodeEnabled ?? true}
-        countryCode={countryCode ?? null}
         cardStyle={{
           backgroundColor: cardStyle?.backgroundColor,
           borderColor: cardStyle?.borderColor,
@@ -192,11 +186,11 @@ export const CardField = forwardRef<CardFieldInput.Methods, Props>(
           textErrorColor: cardStyle?.textErrorColor,
           fontFamily: cardStyle?.fontFamily,
         }}
-        placeholders={{
-          number: placeholders?.number,
-          expiration: placeholders?.expiration,
-          cvc: placeholders?.cvc,
-          postalCode: placeholders?.postalCode,
+        placeholder={{
+          number: placeholder?.number,
+          expiration: placeholder?.expiration,
+          cvc: placeholder?.cvc,
+          postalCode: placeholder?.postalCode,
         }}
         {...props}
       />

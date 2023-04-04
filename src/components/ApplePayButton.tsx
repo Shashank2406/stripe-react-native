@@ -1,7 +1,14 @@
-import React, { useMemo } from 'react';
-import ApplePayButtonNative from './ApplePayButtonNative';
-import type { AccessibilityProps, StyleProp, ViewStyle } from 'react-native';
 import type { ApplePayButtonComponent } from '../types';
+import React, { useMemo } from 'react';
+import {
+  AccessibilityProps,
+  requireNativeComponent,
+  StyleProp,
+  ViewStyle,
+} from 'react-native';
+
+const ApplePayButtonNative =
+  requireNativeComponent<ApplePayButtonComponent.NativeProps>('ApplePayButton');
 
 /**
  *  Apple Pay Button Component Props

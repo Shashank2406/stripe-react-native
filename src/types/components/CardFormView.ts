@@ -19,22 +19,12 @@ export interface Details {
    * See the docs for details: https://stripe.com/docs/security/guide#validating-pci-compliance
    */
   number?: string;
-  cvc?: string;
 }
 
 export interface Styles {
   backgroundColor?: string;
   // disabledBackgroundColor?: string;
   // type?: 'borderless' | 'standard';
-  borderWidth?: number;
-  borderColor?: string;
-  borderRadius?: number;
-  textColor?: string;
-  fontSize?: number;
-  placeholderColor?: string;
-  cursorColor?: string;
-  textErrorColor?: string;
-  fontFamily?: string;
 }
 
 export interface Placeholders {
@@ -44,11 +34,6 @@ export interface Placeholders {
   postalCode?: string;
 }
 
-export type DefaultValues = {
-  /** The 2-letter country code for the country selected by default on Android. If this is null, it is set by the device's configured region in the Settings app. */
-  countryCode?: string;
-};
-
 /**
  * @ignore
  */
@@ -57,10 +42,7 @@ export interface NativeProps {
   autofocus?: boolean;
   // isUserInteractionEnabledValue?: boolean;
   cardStyle?: Styles;
-  /** Android only */
-  placeholders?: Placeholders;
-  /** Android only */
-  defaultValues?: DefaultValues;
+  // placeholder: Placeholders;
   // postalCodeEnabled: boolean;
   onFocusChange(
     event: NativeSyntheticEvent<{ focusedField: FieldName | null }>

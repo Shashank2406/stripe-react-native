@@ -3,17 +3,19 @@ import {
   AccessibilityProps,
   StyleProp,
   ViewStyle,
+  requireNativeComponent,
   TouchableOpacity,
   StyleSheet,
 } from 'react-native';
-import GooglePayButtonNative from './GooglePayButtonNative';
+
+const GooglePayButtonNative = requireNativeComponent<any>('GooglePayButton');
 
 /**
- *  Google Pay Button Component Props
+ *  Apple Pay Button Component Props
  */
 export interface Props extends AccessibilityProps {
   style?: StyleProp<ViewStyle>;
-  type?: 'pay' | 'standard';
+  type?: 'pay' | 'pay_shadow' | 'standard' | 'standard_shadow';
   onPress(): void;
   disabled?: boolean;
   testID?: string;

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useStripe } from './useStripe';
 import { NativeEventEmitter, NativeModules } from 'react-native';
 
+const eventEmitter = new NativeEventEmitter(NativeModules.StripeSdk);
+
 export interface Props {
   /**
    *
@@ -103,7 +105,6 @@ export function useApplePay({
   );
 
   useEffect(() => {
-    const eventEmitter = new NativeEventEmitter(NativeModules.StripeSdk);
     const didSetShippingMethodListener = eventEmitter.addListener(
       SET_SHIPPING_METHOD_CALLBACK_NAME,
       onDidSetShippingMethod

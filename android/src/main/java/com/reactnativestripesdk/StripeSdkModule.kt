@@ -1,86 +1,67 @@
 package com.reactnativestripesdk
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Parcelable
 import android.util.Log
-import androidx.fragment.app.FragmentActivity
+import androidx.appcompat.app.AppCompatActivity
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.facebook.react.bridge.*
 import com.facebook.react.module.annotations.ReactModule
-import com.reactnativestripesdk.addresssheet.AddressLauncherFragment
-import com.reactnativestripesdk.pushprovisioning.PushProvisioningProxy
-import com.reactnativestripesdk.utils.*
 import com.stripe.android.*
-import com.stripe.android.core.ApiVersion
 import com.stripe.android.core.AppInfo
 import com.stripe.android.googlepaylauncher.GooglePayLauncher
+import com.stripe.android.googlepaylauncher.GooglePayPaymentMethodLauncher
 import com.stripe.android.model.*
 import com.stripe.android.payments.bankaccount.CollectBankAccountConfiguration
-import com.stripe.android.paymentsheet.PaymentSheet
+import com.stripe.android.paymentsheet.PaymentSheetResult
 import com.stripe.android.view.AddPaymentMethodActivityStarter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-
 @ReactModule(name = StripeSdkModule.NAME)
-class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
-  override fun getName(): String {
-    return "StripeSdk"
-  }
-
+class StripeSdkModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
   var cardFieldView: CardFieldView? = null
   var cardFormView: CardFormView? = null
 
+  override fun getName(): String {
+    return "StripeSdk"
+  }
   private lateinit var stripe: Stripe
+
+  private lateinit var paymentLauncherFragment: PaymentLauncherFragment
+
   private lateinit var publishableKey: String
   private var stripeAccountId: String? = null
-  private var urlScheme: String? = null
-
-  private var confirmPromise: Promise? = null
-  private var confirmPaymentClientSecret: String? = null
-  private var createPlatformPayPaymentMethodPromise: Promise? = null
-  private var platformPayUsesDeprecatedTokenFlow = false
-
   private var paymentSheetFragment: PaymentSheetFragment? = null
-  private var googlePayFragment: GooglePayFragment? = null
-  private var paymentLauncherFragment: PaymentLauncherFragment? = null
-  private var collectBankAccountLauncherFragment: CollectBankAccountLauncherFragment? = null
 
-  // If you create a new Fragment, you must put the tag here, otherwise result callbacks for that
-  // Fragment will not work on RN < 0.65
-  private val allStripeFragmentTags: List<String>
-    get() = listOf(
-      PaymentSheetFragment.TAG,
-      GooglePayFragment.TAG,
-      PaymentLauncherFragment.TAG,
-      CollectBankAccountLauncherFragment.TAG,
-      FinancialConnectionsSheetFragment.TAG,
-      AddressLauncherFragment.TAG,
-      GooglePayLauncherFragment.TAG
-    )
+  private var urlScheme: String? = null
+  private var confirmPromise: Promise? = null
+  private var confirmPaymentSheetPaymentPromise: Promise? = null
+  private var presentPaymentSheetPromise: Promise? = null
+  private var initPaymentSheetPromise: Promise? = null
+  private var confirmPaymentClientSecret: String? = null
+
+  private var googlePayFragment: GooglePayFragment? = null
+  private var initGooglePayPromise: Promise? = null
+  private var presentGooglePayPromise: Promise? = null
 
   private val mActivityEventListener = object : BaseActivityEventListener() {
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
       if (::stripe.isInitialized) {
-        when (requestCode) {
-          GooglePayRequestHelper.LOAD_PAYMENT_DATA_REQUEST_CODE -> {
-            createPlatformPayPaymentMethodPromise?.let {
-              GooglePayRequestHelper.handleGooglePaymentMethodResult(resultCode, data, stripe, platformPayUsesDeprecatedTokenFlow, it)
-              createPlatformPayPaymentMethodPromise = null
-            } ?: run { Log.d("StripeReactNative", "No promise was found, Google Pay result went unhandled,") }
+        paymentSheetFragment?.activity?.activityResultRegistry?.dispatchResult(requestCode, resultCode, data)
+        googlePayFragment?.activity?.activityResultRegistry?.dispatchResult(requestCode, resultCode, data)
+        try {
+          val result = AddPaymentMethodActivityStarter.Result.fromIntent(data)
+          if (data?.getParcelableExtra<Parcelable>("extra_activity_result") != null) {
+            onFpxPaymentMethodResult(result)
           }
-          else -> {
-            dispatchActivityResultsToFragments(requestCode, resultCode, data)
-            try {
-              val result = AddPaymentMethodActivityStarter.Result.fromIntent(data)
-              if (data?.getParcelableExtra<Parcelable>("extra_activity_result") != null) {
-                onFpxPaymentMethodResult(result)
-              }
-            } catch (e: java.lang.Exception) {
-              Log.d("StripeReactNative", e.localizedMessage ?: e.toString())
-            }
-          }
+        } catch (e: java.lang.Exception) {
+          Log.d("Error", e.localizedMessage ?: e.toString())
         }
       }
     }
@@ -88,17 +69,6 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
   init {
     reactContext.addActivityEventListener(mActivityEventListener)
-  }
-
-  // Necessary on older versions of React Native (~0.65 and below)
-  private fun dispatchActivityResultsToFragments(requestCode: Int, resultCode: Int, data: Intent?) {
-    getCurrentActivityOrResolveWithError(null)?.supportFragmentManager?.let { fragmentManager ->
-      for (tag in allStripeFragmentTags) {
-        fragmentManager.findFragmentByTag(tag)?.let {
-          it.activity?.activityResultRegistry?.dispatchResult(requestCode, resultCode, data)
-        }
-      }
-    }
   }
 
   private fun configure3dSecure(params: ReadableMap) {
@@ -117,13 +87,107 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     )
   }
 
-  override fun getConstants(): MutableMap<String, Any> =
-    hashMapOf(
-      "API_VERSIONS" to hashMapOf(
-        "CORE" to ApiVersion.API_VERSION_CODE,
-        "ISSUING" to PushProvisioningProxy.getApiVersion(),
-      )
-    )
+  private val googlePayReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent) {
+      if (intent.action == ON_INIT_GOOGLE_PAY) {
+        val isReady = intent.extras?.getBoolean("isReady") ?: false
+        if (isReady) {
+          initGooglePayPromise?.resolve(WritableNativeMap())
+        } else {
+          initGooglePayPromise?.resolve(
+            createError(
+              GooglePayErrorType.Failed.toString(),
+              "Google Pay is not available on this device. You can use isGooglePaySupported to preemptively check for Google Pay support."
+            )
+          )
+        }
+      }
+      if (intent.action == ON_GOOGLE_PAYMENT_METHOD_RESULT) {
+        intent.extras?.getString("error")?.let {
+          presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), it))
+          return
+        }
+        when (val result = intent.extras?.getParcelable<GooglePayPaymentMethodLauncher.Result>("paymentResult")) {
+          is GooglePayPaymentMethodLauncher.Result.Completed -> {
+            presentGooglePayPromise?.resolve(createResult("paymentMethod", mapFromPaymentMethod(result.paymentMethod)))
+          }
+          GooglePayPaymentMethodLauncher.Result.Canceled -> {
+            presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Canceled.toString(), "Google Pay has been canceled"))
+          }
+          is GooglePayPaymentMethodLauncher.Result.Failed -> {
+            presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), result.error))
+          }
+        }
+      }
+      if (intent.action == ON_GOOGLE_PAY_RESULT) {
+        intent.extras?.getString("error")?.let {
+          presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), it))
+          return
+        }
+        when (val result = intent.extras?.getParcelable<GooglePayLauncher.Result>("paymentResult")) {
+          GooglePayLauncher.Result.Completed -> {
+            presentGooglePayPromise?.resolve(WritableNativeMap())
+          }
+          GooglePayLauncher.Result.Canceled -> {
+            presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Canceled.toString(), "Google Pay has been canceled"))
+          }
+          is GooglePayLauncher.Result.Failed -> {
+            presentGooglePayPromise?.resolve(createError(GooglePayErrorType.Failed.toString(), result.error))
+          }
+        }
+      }
+    }
+  }
+
+  private val mPaymentSheetReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent) {
+      if (intent.action == ON_PAYMENT_RESULT_ACTION) {
+        when (val result = intent.extras?.getParcelable<PaymentSheetResult>("paymentResult")) {
+          is PaymentSheetResult.Canceled -> {
+            val message = "The payment has been canceled"
+            confirmPaymentSheetPaymentPromise?.resolve(createError(PaymentSheetErrorType.Canceled.toString(), message))
+            presentPaymentSheetPromise?.resolve(createError(PaymentSheetErrorType.Canceled.toString(), message))
+          }
+          is PaymentSheetResult.Failed -> {
+            confirmPaymentSheetPaymentPromise?.resolve(createError(PaymentSheetErrorType.Failed.toString(), result.error))
+            presentPaymentSheetPromise?.resolve(createError(PaymentSheetErrorType.Failed.toString(), result.error))
+          }
+          is PaymentSheetResult.Completed -> {
+            confirmPaymentSheetPaymentPromise?.resolve(WritableNativeMap())
+            presentPaymentSheetPromise?.resolve(WritableNativeMap())
+          }
+        }
+      } else if (intent.action == ON_PAYMENT_OPTION_ACTION) {
+        val label = intent.extras?.getString("label")
+        val image = intent.extras?.getString("image")
+
+        if (label != null && image != null) {
+          val option: WritableMap = WritableNativeMap()
+          option.putString("label", label)
+          option.putString("image", image)
+          presentPaymentSheetPromise?.resolve(createResult("paymentOption", option))
+        } else {
+          presentPaymentSheetPromise?.resolve(WritableNativeMap())
+        }
+        presentPaymentSheetPromise = null
+      }
+      else if (intent.action == ON_INIT_PAYMENT_SHEET) {
+        initPaymentSheetPromise?.resolve(WritableNativeMap())
+      } else if (intent.action == ON_CONFIGURE_FLOW_CONTROLLER) {
+        val label = intent.extras?.getString("label")
+        val image = intent.extras?.getString("image")
+
+        if (label != null && image != null) {
+          val option: WritableMap = WritableNativeMap()
+          option.putString("label", label)
+          option.putString("image", image)
+          initPaymentSheetPromise?.resolve(createResult("paymentOption", option))
+        } else {
+          initPaymentSheetPromise?.resolve(WritableNativeMap())
+        }
+      }
+    }
+  }
 
   @ReactMethod
   fun initialise(params: ReadableMap, promise: Promise) {
@@ -139,7 +203,6 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     this.publishableKey = publishableKey
-    AddressLauncherFragment.publishableKey = publishableKey
 
     val name = getValOr(appInfo, "name", "") as String
     val partnerId = getValOr(appInfo, "partnerId", "")
@@ -150,58 +213,52 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     stripe = Stripe(reactApplicationContext, publishableKey, stripeAccountId)
 
     PaymentConfiguration.init(reactApplicationContext, publishableKey, stripeAccountId)
-    promise.resolve(null)
+
+    paymentLauncherFragment = PaymentLauncherFragment(stripe, publishableKey, stripeAccountId)
+    getCurrentActivityOrResolveWithError(promise)?.let {
+      it.supportFragmentManager.beginTransaction()
+        .add(paymentLauncherFragment, "payment_launcher_fragment")
+        .commit()
+
+      val localBroadcastManager = LocalBroadcastManager.getInstance(reactApplicationContext)
+      localBroadcastManager.registerReceiver(mPaymentSheetReceiver, IntentFilter(ON_PAYMENT_RESULT_ACTION))
+      localBroadcastManager.registerReceiver(mPaymentSheetReceiver, IntentFilter(ON_PAYMENT_OPTION_ACTION))
+      localBroadcastManager.registerReceiver(mPaymentSheetReceiver, IntentFilter(ON_CONFIGURE_FLOW_CONTROLLER))
+      localBroadcastManager.registerReceiver(mPaymentSheetReceiver, IntentFilter(ON_INIT_PAYMENT_SHEET))
+
+      localBroadcastManager.registerReceiver(googlePayReceiver, IntentFilter(ON_INIT_GOOGLE_PAY))
+      localBroadcastManager.registerReceiver(googlePayReceiver, IntentFilter(ON_GOOGLE_PAY_RESULT))
+      localBroadcastManager.registerReceiver(googlePayReceiver, IntentFilter(ON_GOOGLE_PAYMENT_METHOD_RESULT))
+
+      promise.resolve(null)
+    }
   }
 
   @ReactMethod
   fun initPaymentSheet(params: ReadableMap, promise: Promise) {
     getCurrentActivityOrResolveWithError(promise)?.let { activity ->
-      paymentSheetFragment?.removeFragment(reactApplicationContext)
-      paymentSheetFragment = PaymentSheetFragment(reactApplicationContext, promise).also {
+      this.initPaymentSheetPromise = promise
+
+      paymentSheetFragment = PaymentSheetFragment().also {
         val bundle = toBundleObject(params)
         it.arguments = bundle
       }
-      try {
-        activity.supportFragmentManager.beginTransaction()
-          .add(paymentSheetFragment!!, PaymentSheetFragment.TAG)
-          .commit()
-      } catch (error: IllegalStateException) {
-        promise.resolve(createError(ErrorType.Failed.toString(), error.message))
-      }
+      activity.supportFragmentManager.beginTransaction()
+        .add(paymentSheetFragment!!, "payment_sheet_launch_fragment")
+        .commit()
     }
   }
 
   @ReactMethod
-  fun presentPaymentSheet(options: ReadableMap, promise: Promise) {
-    if (paymentSheetFragment == null) {
-      promise.resolve(PaymentSheetFragment.createMissingInitError())
-      return
-    }
-
-    val timeoutKey = "timeout"
-    if (options.hasKey(timeoutKey)) {
-      paymentSheetFragment?.presentWithTimeout(
-        options.getInt(timeoutKey).toLong(), promise
-      )
-    } else {
-      paymentSheetFragment?.present(promise)
-    }
+  fun presentPaymentSheet(promise: Promise) {
+    this.presentPaymentSheetPromise = promise
+    paymentSheetFragment?.present()
   }
 
   @ReactMethod
   fun confirmPaymentSheetPayment(promise: Promise) {
-    if (paymentSheetFragment == null) {
-      promise.resolve(PaymentSheetFragment.createMissingInitError())
-      return
-    }
-
-    paymentSheetFragment?.confirmPayment(promise)
-  }
-
-  @ReactMethod
-  fun resetPaymentSheetCustomer(promise: Promise) {
-    PaymentSheet.resetCustomer(context = reactApplicationContext)
-    promise.resolve(null)
+    this.confirmPaymentSheetPaymentPromise = promise
+    paymentSheetFragment?.confirmPayment()
   }
 
   private fun payWithFpx() {
@@ -218,21 +275,17 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     when (result) {
       is AddPaymentMethodActivityStarter.Result.Success -> {
         if (confirmPaymentClientSecret != null && confirmPromise != null) {
-          paymentLauncherFragment = PaymentLauncherFragment.forPayment(
-            context = reactApplicationContext,
-            stripe,
-            publishableKey,
-            stripeAccountId,
-            confirmPromise!!,
-            confirmPaymentClientSecret!!,
+          paymentLauncherFragment.confirm(
             ConfirmPaymentIntentParams.createWithPaymentMethodId(
               result.paymentMethod.id!!,
               confirmPaymentClientSecret!!
-            )
+            ),
+            confirmPaymentClientSecret!!,
+            confirmPromise!!
           )
         } else {
           Log.e("StripeReactNative", "FPX payment failed. Promise and/or client secret is not set.")
-          confirmPromise?.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "FPX payment failed. Client secret is not set."))
+          confirmPromise?.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "FPX payment failed."))
         }
       }
       is AddPaymentMethodActivityStarter.Result.Failure -> {
@@ -248,30 +301,27 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
   @ReactMethod
   fun createPaymentMethod(data: ReadableMap, options: ReadableMap, promise: Promise) {
-    val paymentMethodType = getValOr(data, "paymentMethodType")?.let { mapToPaymentMethodType(it) } ?: run {
-      promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "You must provide paymentMethodType"))
+    val cardParams = (cardFieldView?.cardParams ?: cardFormView?.cardParams) ?: run {
+      promise.resolve(createError("Failed", "Card details not complete"))
       return
     }
-    val paymentMethodData = getMapOrNull(data, "paymentMethodData")
-    val factory = PaymentMethodCreateParamsFactory(paymentMethodData, options, cardFieldView, cardFormView)
-    try {
-      val paymentMethodCreateParams = factory.createPaymentMethodParams(paymentMethodType)
-      stripe.createPaymentMethod(
-        paymentMethodCreateParams,
-        callback = object : ApiResultCallback<PaymentMethod> {
-          override fun onError(e: Exception) {
-            promise.resolve(createError("Failed", e))
-          }
+    val cardAddress = cardFieldView?.cardAddress ?: cardFormView?.cardAddress
 
-          override fun onSuccess(result: PaymentMethod) {
-            val paymentMethodMap: WritableMap = mapFromPaymentMethod(result)
-            promise.resolve(createResult("paymentMethod", paymentMethodMap))
-          }
+    val billingDetailsParams = mapToBillingDetails(getMapOrNull(data, "billingDetails"), cardAddress)
+
+    val paymentMethodCreateParams = PaymentMethodCreateParams.create(cardParams, billingDetailsParams)
+    stripe.createPaymentMethod(
+      paymentMethodCreateParams,
+      callback = object : ApiResultCallback<PaymentMethod> {
+        override fun onError(e: Exception) {
+          promise.resolve(createError("Failed", e))
         }
-      )
-    } catch (error: PaymentMethodCreateParamsException) {
-      promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), error))
-    }
+
+        override fun onSuccess(result: PaymentMethod) {
+          val paymentMethodMap: WritableMap = mapFromPaymentMethod(result)
+          promise.resolve(createResult("paymentMethod", paymentMethodMap))
+        }
+      })
   }
 
   @ReactMethod
@@ -289,27 +339,9 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
       "Card" -> {
         createTokenFromCard(params, promise)
       }
-      "Pii" -> {
-        createTokenFromPii(params, promise)
-      }
       else -> {
         promise.resolve(createError(CreateTokenErrorType.Failed.toString(), "$type type is not supported yet"))
       }
-    }
-  }
-
-  private fun createTokenFromPii(params: ReadableMap, promise: Promise) {
-    getValOr(params, "personalId", null)?.let {
-      CoroutineScope(Dispatchers.IO).launch {
-        runCatching {
-          val token = stripe.createPiiToken(it, null, stripeAccountId)
-          promise.resolve(createResult("token", mapFromToken(token)))
-        }.onFailure {
-          promise.resolve(createError(CreateTokenErrorType.Failed.toString(), it.message))
-        }
-      }
-    } ?: run {
-      promise.resolve(createError(CreateTokenErrorType.Failed.toString(), "personalId parameter is required"))
     }
   }
 
@@ -393,13 +425,9 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
   @ReactMethod
   fun handleNextAction(paymentIntentClientSecret: String, promise: Promise) {
-    paymentLauncherFragment = PaymentLauncherFragment.forNextAction(
-      context = reactApplicationContext,
-      stripe,
-      publishableKey,
-      stripeAccountId,
-      promise,
-      paymentIntentClientSecret
+    paymentLauncherFragment.handleNextActionForPaymentIntent(
+      paymentIntentClientSecret,
+      promise
     )
   }
 
@@ -423,15 +451,11 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 //  }
 
   @ReactMethod
-  fun confirmPayment(paymentIntentClientSecret: String, params: ReadableMap?, options: ReadableMap, promise: Promise) {
-    val paymentMethodData = getMapOrNull(params, "paymentMethodData")
-    val paymentMethodType = if (params != null)
-      mapToPaymentMethodType(params.getString("paymentMethodType")) ?: run {
-        promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "You must provide paymentMethodType"))
-        return
-      }
-    else
-      null // Expect that payment method was attached on the server
+  fun confirmPayment(paymentIntentClientSecret: String, params: ReadableMap, options: ReadableMap, promise: Promise) {
+    val paymentMethodType = getValOr(params, "type")?.let { mapToPaymentMethodType(it) } ?: run {
+      promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "You must provide paymentMethodType"))
+      return
+    }
 
     val testOfflineBank = getBooleanOrFalse(params, "testOfflineBank")
 
@@ -452,22 +476,18 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 //      return
 //    }
 
-    val factory = PaymentMethodCreateParamsFactory(paymentMethodData, options, cardFieldView, cardFormView)
+    val factory = PaymentMethodCreateParamsFactory(paymentIntentClientSecret, params, cardFieldView, cardFormView)
 
     try {
-      val confirmParams = factory.createParams(paymentIntentClientSecret, paymentMethodType, isPaymentIntent = true) as ConfirmPaymentIntentParams
+      val confirmParams = factory.createConfirmParams(paymentMethodType)
       urlScheme?.let {
         confirmParams.returnUrl = mapToReturnURL(urlScheme)
       }
-      confirmParams.shipping = mapToShippingDetails(getMapOrNull(paymentMethodData, "shippingDetails"))
-      paymentLauncherFragment = PaymentLauncherFragment.forPayment(
-        context = reactApplicationContext,
-        stripe,
-        publishableKey,
-        stripeAccountId,
-        promise,
+      confirmParams.shipping = mapToShippingDetails(getMapOrNull(params, "shippingDetails"))
+      paymentLauncherFragment.confirm(
+        confirmParams,
         paymentIntentClientSecret,
-        confirmParams
+        promise
       )
     } catch (error: PaymentMethodCreateParamsException) {
       promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), error))
@@ -500,26 +520,22 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
   @ReactMethod
   fun confirmSetupIntent(setupIntentClientSecret: String, params: ReadableMap, options: ReadableMap, promise: Promise) {
-    val paymentMethodType = getValOr(params, "paymentMethodType")?.let { mapToPaymentMethodType(it) } ?: run {
+    val paymentMethodType = getValOr(params, "type")?.let { mapToPaymentMethodType(it) } ?: run {
       promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), "You must provide paymentMethodType"))
       return
     }
 
-    val factory = PaymentMethodCreateParamsFactory(getMapOrNull(params, "paymentMethodData"), options, cardFieldView, cardFormView)
+    val factory = PaymentMethodCreateParamsFactory(setupIntentClientSecret, params, cardFieldView, cardFormView)
 
     try {
-      val confirmParams = factory.createParams(setupIntentClientSecret, paymentMethodType, isPaymentIntent = false) as ConfirmSetupIntentParams
+      val confirmParams = factory.createSetupParams(paymentMethodType)
       urlScheme?.let {
         confirmParams.returnUrl = mapToReturnURL(urlScheme)
       }
-      paymentLauncherFragment = PaymentLauncherFragment.forSetup(
-        context = reactApplicationContext,
-        stripe,
-        publishableKey,
-        stripeAccountId,
-        promise,
+      paymentLauncherFragment.confirm(
+        confirmParams,
         setupIntentClientSecret,
-        confirmParams
+        promise
       )
     } catch (error: PaymentMethodCreateParamsException) {
       promise.resolve(createError(ConfirmPaymentErrorType.Failed.toString(), error))
@@ -527,60 +543,34 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
   }
 
   @ReactMethod
-  fun isPlatformPaySupported(params: ReadableMap?, promise: Promise) {
-    val fragment = GooglePayPaymentMethodLauncherFragment(
-      reactApplicationContext,
-      getBooleanOrFalse(params, "testEnv"),
-      getBooleanOrFalse(params, "existingPaymentMethodRequired"),
-      promise
-    )
-
-    getCurrentActivityOrResolveWithError(promise)?.let {
-      try {
-        it.supportFragmentManager.beginTransaction()
-          .add(fragment, GooglePayPaymentMethodLauncherFragment.TAG)
-          .commit()
-      } catch (error: IllegalStateException) {
-        promise.resolve(createError(ErrorType.Failed.toString(), error.message))
-      }
-    }
-  }
-
-  @ReactMethod
   fun isGooglePaySupported(params: ReadableMap?, promise: Promise) {
     val fragment = GooglePayPaymentMethodLauncherFragment(
-      reactApplicationContext,
+      reactContext,
       getBooleanOrFalse(params, "testEnv"),
       getBooleanOrFalse(params, "existingPaymentMethodRequired"),
       promise
     )
 
     getCurrentActivityOrResolveWithError(promise)?.let {
-      try {
-        it.supportFragmentManager.beginTransaction()
-          .add(fragment, GooglePayPaymentMethodLauncherFragment.TAG)
-          .commit()
-      } catch (error: IllegalStateException) {
-        promise.resolve(createError(ErrorType.Failed.toString(), error.message))
-      }
+      it.supportFragmentManager.beginTransaction()
+        .add(fragment, "google_pay_support_fragment")
+        .commit()
     }
   }
 
   @ReactMethod
   fun initGooglePay(params: ReadableMap, promise: Promise) {
-    googlePayFragment = GooglePayFragment(promise).also {
+    googlePayFragment = GooglePayFragment().also {
       val bundle = toBundleObject(params)
       it.arguments = bundle
     }
 
     getCurrentActivityOrResolveWithError(promise)?.let {
-      try {
-        it.supportFragmentManager.beginTransaction()
-          .add(googlePayFragment!!, GooglePayFragment.TAG)
-          .commit()
-      } catch (error: IllegalStateException) {
-        promise.resolve(createError(ErrorType.Failed.toString(), error.message))
-      }
+      initGooglePayPromise = promise
+
+      it.supportFragmentManager.beginTransaction()
+        .add(googlePayFragment!!, "google_pay_launch_fragment")
+        .commit()
     }
   }
 
@@ -590,71 +580,15 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
       promise.resolve(createError(GooglePayErrorType.Failed.toString(), "you must provide clientSecret"))
       return
     }
-
+    presentGooglePayPromise = promise
     if (getBooleanOrFalse(params, "forSetupIntent")) {
       val currencyCode = getValOr(params, "currencyCode") ?: run {
         promise.resolve(createError(GooglePayErrorType.Failed.toString(), "you must provide currencyCode"))
         return
       }
-      googlePayFragment?.presentForSetupIntent(clientSecret, currencyCode, promise)
+      googlePayFragment?.presentForSetupIntent(clientSecret, currencyCode)
     } else {
-      googlePayFragment?.presentForPaymentIntent(clientSecret, promise)
-    }
-  }
-
-  @ReactMethod
-  fun confirmPlatformPay(clientSecret: String, params: ReadableMap, isPaymentIntent: Boolean, promise: Promise) {
-    if (!::stripe.isInitialized) {
-      promise.resolve(createMissingInitError())
-      return
-    }
-
-    val googlePayParams: ReadableMap = params.getMap("googlePay") ?: run {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), "You must provide the `googlePay` parameter."))
-      return
-    }
-
-    GooglePayLauncherFragment().also {
-      it.presentGooglePaySheet(
-        clientSecret,
-        if (isPaymentIntent) GooglePayLauncherFragment.Mode.ForPayment else GooglePayLauncherFragment.Mode.ForSetup,
-        googlePayParams,
-        reactApplicationContext
-      ) { launcherResult, errorMap ->
-        if (errorMap != null) {
-          promise.resolve(errorMap)
-        } else if (launcherResult != null) {
-          when (launcherResult) {
-            GooglePayLauncher.Result.Completed -> {
-              if (isPaymentIntent) {
-                stripe.retrievePaymentIntent(clientSecret, stripeAccountId, expand = listOf("payment_method"), object : ApiResultCallback<PaymentIntent> {
-                  override fun onError(e: Exception) {
-                    promise.resolve(createResult("paymentIntent", WritableNativeMap()))
-                  }
-                  override fun onSuccess(result: PaymentIntent) {
-                    promise.resolve(createResult("paymentIntent", mapFromPaymentIntentResult(result)))
-                  }
-                })
-              } else {
-                stripe.retrieveSetupIntent(clientSecret, stripeAccountId, expand = listOf("payment_method"),  object : ApiResultCallback<SetupIntent> {
-                  override fun onError(e: Exception) {
-                    promise.resolve(createResult("setupIntent", WritableNativeMap()))
-                  }
-                  override fun onSuccess(result: SetupIntent) {
-                    promise.resolve(createResult("setupIntent", mapFromSetupIntentResult(result)))
-                  }
-                })
-              }
-            }
-            GooglePayLauncher.Result.Canceled -> {
-              promise.resolve(createError(GooglePayErrorType.Canceled.toString(), "Google Pay has been canceled"))
-            }
-            is GooglePayLauncher.Result.Failed -> {
-              promise.resolve(createError(GooglePayErrorType.Failed.toString(), launcherResult.error))
-            }
-          }
-        }
-      }
+      googlePayFragment?.presentForPaymentIntent(clientSecret)
     }
   }
 
@@ -668,81 +602,19 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
       promise.resolve(createError(GooglePayErrorType.Failed.toString(), "you must provide amount"))
       return
     }
-    googlePayFragment?.createPaymentMethod(currencyCode, amount, promise)
-  }
-
-  @ReactMethod
-  fun createPlatformPayPaymentMethod(params: ReadableMap, usesDeprecatedTokenFlow: Boolean, promise: Promise) {
-    val googlePayParams: ReadableMap = params.getMap("googlePay") ?: run {
-      promise.resolve(createError(GooglePayErrorType.Failed.toString(), "You must provide the `googlePay` parameter."))
-      return
-    }
-    platformPayUsesDeprecatedTokenFlow = usesDeprecatedTokenFlow
-    createPlatformPayPaymentMethodPromise = promise
-    getCurrentActivityOrResolveWithError(promise)?.let {
-      val request = GooglePayRequestHelper.createPaymentRequest(
-        it,
-        GooglePayJsonFactory(reactApplicationContext),
-        googlePayParams
-      )
-      GooglePayRequestHelper.createPaymentMethod(request, it)
-    }
-  }
-
-  @ReactMethod
-  fun canAddCardToWallet(params: ReadableMap, promise: Promise) {
-    val last4 = getValOr(params, "cardLastFour", null) ?: run {
-      promise.resolve(createError("Failed", "You must provide cardLastFour"))
-      return
-    }
-
-    if (params.getBooleanOr("supportsTapToPay", true) && !PushProvisioningProxy.isNFCEnabled(reactApplicationContext)) {
-      promise.resolve(createCanAddCardResult(false, "UNSUPPORTED_DEVICE"))
-      return
-    }
-
-    getCurrentActivityOrResolveWithError(promise)?.let {
-      PushProvisioningProxy.isCardInWallet(it, last4) { isCardInWallet, token, error ->
-        val result = error?.let {
-          createCanAddCardResult(false, "MISSING_CONFIGURATION", null)
-        } ?: run {
-          val status = if (isCardInWallet) "CARD_ALREADY_EXISTS" else null
-          createCanAddCardResult(!isCardInWallet, status, token)
-        }
-        promise.resolve(result)
-      }
-    }
-  }
-
-  @ReactMethod
-  fun isCardInWallet(params: ReadableMap, promise: Promise) {
-    val last4 = getValOr(params, "cardLastFour", null) ?: run {
-      promise.resolve(createError("Failed", "You must provide cardLastFour"))
-      return
-    }
-    getCurrentActivityOrResolveWithError(promise)?.let {
-      PushProvisioningProxy.isCardInWallet(it, last4) { isCardInWallet, token, error ->
-        val result: WritableMap = error ?: run {
-          val map = WritableNativeMap()
-          map.putBoolean("isInWallet", isCardInWallet)
-          map.putMap("token", token)
-          map
-        }
-        promise.resolve(result)
-      }
-    }
+    presentGooglePayPromise = promise
+    googlePayFragment?.createPaymentMethod(currencyCode, amount)
   }
 
   @ReactMethod
   fun collectBankAccount(isPaymentIntent: Boolean, clientSecret: String, params: ReadableMap, promise: Promise) {
-    val paymentMethodData = getMapOrNull(params, "paymentMethodData")
-    val paymentMethodType = mapToPaymentMethodType(getValOr(params, "paymentMethodType", null))
+    val paymentMethodType = mapToPaymentMethodType(getValOr(params, "type", null))
     if (paymentMethodType != PaymentMethod.Type.USBankAccount) {
       promise.resolve(createError(ErrorType.Failed.toString(), "collectBankAccount currently only accepts the USBankAccount payment method type."))
       return
     }
 
-    val billingDetails = getMapOrNull(paymentMethodData, "billingDetails")
+    val billingDetails = getMapOrNull(params, "billingDetails")
 
     val name = billingDetails?.getString("name")
     if (name.isNullOrEmpty()) {
@@ -755,23 +627,18 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
       billingDetails.getString("email")
     )
 
-    collectBankAccountLauncherFragment = CollectBankAccountLauncherFragment(
-      reactApplicationContext,
+    val fragment = CollectBankAccountLauncherFragment(
+      reactContext,
       publishableKey,
-      stripeAccountId,
       clientSecret,
       isPaymentIntent,
       collectParams,
       promise
     )
     getCurrentActivityOrResolveWithError(promise)?.let {
-      try {
-        it.supportFragmentManager.beginTransaction()
-          .add(collectBankAccountLauncherFragment!!, "collect_bank_account_launcher_fragment")
-          .commit()
-      } catch (error: IllegalStateException) {
-        promise.resolve(createError(ErrorType.Failed.toString(), error.message))
-      }
+      it.supportFragmentManager.beginTransaction()
+        .add(fragment, "collect_bank_account_launcher_fragment")
+        .commit()
     }
   }
 
@@ -794,7 +661,6 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
         promise.resolve(createResult("paymentIntent", mapFromPaymentIntentResult(result)))
       }
     }
-
     val setupCallback = object : ApiResultCallback<SetupIntent> {
       override fun onError(e: Exception) {
         promise.resolve(createError(ErrorType.Failed.toString(), e))
@@ -843,43 +709,12 @@ class StripeSdkModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
   }
 
-  @ReactMethod
-  fun collectBankAccountToken(clientSecret: String, promise: Promise) {
-    if (!::stripe.isInitialized) {
-      promise.resolve(createMissingInitError())
-      return
-    }
-    FinancialConnectionsSheetFragment().also {
-      it.presentFinancialConnectionsSheet(clientSecret, FinancialConnectionsSheetFragment.Mode.ForToken, publishableKey, stripeAccountId, promise, reactApplicationContext)
-    }
-  }
-
-  @ReactMethod
-  fun collectFinancialConnectionsAccounts(clientSecret: String, promise: Promise) {
-    if (!::stripe.isInitialized) {
-      promise.resolve(createMissingInitError())
-      return
-    }
-    FinancialConnectionsSheetFragment().also {
-      it.presentFinancialConnectionsSheet(clientSecret, FinancialConnectionsSheetFragment.Mode.ForSession, publishableKey, stripeAccountId, promise, reactApplicationContext)
-    }
-  }
-
-  /**
-   * We need the following in order to avoid some annoying console.warns() from our Apple Pay event listeners. Otherwise,
-   * we'd have to put our users through some annoying (if Platform.OS...) logic & null-handling logic.
-   */
-  @ReactMethod
-  fun addListener(eventName: String) {}
-  @ReactMethod
-  fun removeListeners(count: Int) {}
-
   /**
    * Safely get and cast the current activity as an AppCompatActivity. If that fails, the promise
    * provided will be resolved with an error message instructing the user to retry the method.
    */
-  private fun getCurrentActivityOrResolveWithError(promise: Promise?): FragmentActivity? {
-    (currentActivity as? FragmentActivity)?.let {
+  private fun getCurrentActivityOrResolveWithError(promise: Promise?): AppCompatActivity? {
+    (currentActivity as? AppCompatActivity)?.let {
       return it
     }
     promise?.resolve(createMissingActivityError())
