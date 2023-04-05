@@ -42,7 +42,7 @@ export {
 };
 
 export * from './Errors';
-export { Address, BillingDetails } from './Common';
+export type { Address, BillingDetails } from './Common';
 
 /**
  * @ignore
